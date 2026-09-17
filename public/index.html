@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>東進過去問一括ダウンローダー</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; padding: 20px; background: #f4f6f8; }
+        .card { max-width: 400px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; margin-top: 0; }
+        label { display: block; margin-top: 12px; font-weight: bold; font-size: 14px; }
+        input { width: 100%; padding: 10px; margin-top: 4px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+        button { width: 100%; margin-top: 20px; padding: 12px; background: #007aff; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; }
+        button:disabled { background: #999; }
+        #status { margin-top: 15px; text-align: center; font-size: 14px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>東進過去問 DL</h2>
+        <form id="dlForm">
+            <label>ログインID (メールアドレス)</label>
+            <input type="text" id="userId" required>
+
+            <label>パスワード</label>
+            <input type="password" id="password" required>
+
+            <label>大学名</label>
+            <input type="text" id="university" placeholder="例: 東京大学" required>
+
+            <label>教科名</label>
+            <input type="text" id="subject" placeholder="例: 数学">
+
+            <button type="submit" id="submitBtn">一括ダウンロード (ZIP)</button>
+        </form>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        document.getElementById('dlForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('submitBtn');
+            const status = document.getElementById('status');
+
+            btn.disabled = true;
+            status.innerText = 'ログイン中・PDFを取得しています... (1〜2分かかります)';
+
+            const payload = {
+                userId: document.getElementById('userId').value,
+                password: document.getElementById('password').value,
+                university: document.getElementById('university').value,
+                subject: document.getElementById('subject').value
+            };
+
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || 'ダウンロードに失敗しました。');
+                }
+
+                const blob = await response.blob();
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = `${payload.university}_過去問.zip`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                status.innerText = 'ダウンロードが完了しました！';
+            } catch (err) {
+                status.innerText = 'エラー: ' + err.message;
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
