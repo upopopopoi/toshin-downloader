@@ -1,0 +1,13 @@
+{
+  "name": "toshin-downloader",
+  "version": "1.0.0",
+  "main": "server.js",
+  "dependencies": {
+    "archiver": "^6.0.1",
+    "express": "^4.19.2",
+    "playwright": "^1.42.1"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
