@@ -6,10 +6,9 @@ const app = express();
 app.use(express.json());
 app.use(express.static('public'));
 
-// セッション一時保存（メモリ上）
 const sessions = {};
 
-// ステップ1: ログイン試行（2段階認証コードの送信をトリガー）
+// ステップ1: ログイン試行
 app.post('/api/login-step1', async (req, res) => {
     const { userId, password } = req.body;
 
@@ -17,39 +16,44 @@ app.post('/api/login-step1', async (req, res) => {
         return res.status(400).json({ error: 'IDとパスワードを入力してください。' });
     }
 
+    let browser;
     try {
-        const browser = await chromium.launch({ headless: true });
+        browser = await chromium.launch({ 
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
         const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         });
         const page = await context.newPage();
 
         console.log("ログインページへ移動中...");
-        await page.goto('https://www.toshin-kakomon.com/login.php', { waitUntil: 'networkidle' });
+        await page.goto('https://www.toshin-kakomon.com/login.php', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        await page.fill('input[name="id"]', userId);
-        await page.fill('input[name="pass"]', password);
-        await page.click('input[type="submit"], button[type="submit"]');
-        await page.waitForTimeout(3000); // 遷移待ち
+        // 入力欄の特定（複数の属性パターンに対応）
+        const idInput = await page.waitForSelector('input[type="text"], input[type="email"], input[name="id"], input[name="login_id"]', { timeout: 15000 });
+        const passInput = await page.waitForSelector('input[type="password"]', { timeout: 15000 });
 
-        // ログイン状態または2段階認証要求の判定
+        await idInput.fill(userId);
+        await passInput.fill(password);
+
+        // 送信ボタンのクリック
+        const submitBtn = await page.$('input[type="submit"], button[type="submit"], .btn_login, #login_btn');
+        if (submitBtn) {
+            await submitBtn.click();
+        } else {
+            await passInput.press('Enter');
+        }
+
+        await page.waitForTimeout(4000);
+
         const currentUrl = page.url();
         const content = await page.content();
 
-        // 既にログイン成功している場合（2段階認証がスキップされた場合）
-        if (!currentUrl.includes('login') && !content.includes('認証コード') && !content.includes('code')) {
-            const cookies = await context.cookies();
-            await browser.close();
-            const sessionId = Date.now().toString();
-            sessions[sessionId] = { cookies, userId };
-            return res.json({ requiresOtp: false, sessionId });
-        }
-
-        // 2段階認証が必要な場合、ブラウザコンテキストを維持（セッションIDを生成）
         const sessionId = Date.now().toString();
         sessions[sessionId] = { browser, context, page, userId };
 
-        // 5分後に自動セッション破棄（タイムアウト対策）
+        // 5分後に自動セッション破棄
         setTimeout(() => {
             if (sessions[sessionId] && sessions[sessionId].browser) {
                 sessions[sessionId].browser.close().catch(() => {});
@@ -57,15 +61,21 @@ app.post('/api/login-step1', async (req, res) => {
             }
         }, 300000);
 
+        // ログイン判定
+        if (!currentUrl.includes('login') && !content.includes('認証コード')) {
+            return res.json({ requiresOtp: false, sessionId });
+        }
+
         return res.json({ requiresOtp: true, sessionId, message: '2段階認証コードを入力してください。' });
 
     } catch (error) {
         console.error("Step1 Error:", error);
+        if (browser) await browser.close().catch(() => {});
         res.status(500).json({ error: `ログイン処理失敗: ${error.message}` });
     }
 });
 
-// ステップ2: 認証コード入力・PDF一括取得
+// ステップ2: 認証コード入力・一括取得
 app.post('/api/download-step2', async (req, res) => {
     const { sessionId, otpCode, university, subject } = req.body;
     const session = sessions[sessionId];
@@ -77,21 +87,20 @@ app.post('/api/download-step2', async (req, res) => {
     try {
         let { page, context, browser } = session;
 
-        // 2段階認証コード入力が必要な場合
         if (otpCode && page) {
             console.log("2段階認証コードを入力中...");
-            // 東進のコード入力欄（input[name="code"] / input[type="text"]等）に入力
-            const codeInput = await page.$('input[name="code"], input[name="auth_code"], input[type="text"]');
+            const codeInput = await page.$('input[name*="code"], input[name*="auth"], input[type="number"], input[type="text"]');
             if (codeInput) {
                 await codeInput.fill(otpCode);
-                await page.click('input[type="submit"], button[type="submit"]');
-                await page.waitForLoadState('networkidle');
+                const submitBtn = await page.$('input[type="submit"], button[type="submit"]');
+                if (submitBtn) await submitBtn.click();
+                await page.waitForTimeout(4000);
             }
         }
 
         console.log(`検索中: ${university} ${subject}`);
         const searchUrl = `https://www.toshin-kakomon.com/search.php?univ=${encodeURIComponent(university)}&subject=${encodeURIComponent(subject || '')}`;
-        await page.goto(searchUrl, { waitUntil: 'networkidle' });
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
         const pdfLinks = await page.evaluate(() => {
             const anchors = Array.from(document.querySelectorAll('a[href*=".pdf"]'));
