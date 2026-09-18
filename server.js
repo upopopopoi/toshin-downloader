@@ -27,25 +27,41 @@ app.post('/api/login-step1', async (req, res) => {
         });
         const page = await context.newPage();
 
-        console.log("ログインページへ移動中...");
-        await page.goto('https://www.toshin-kakomon.com/login.php', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        console.log("東進トップページへ移動中...");
+        // 東進のトップページへアクセス
+        await page.goto('https://www.toshin-kakomon.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 入力欄の特定（複数の属性パターンに対応）
-        const idInput = await page.waitForSelector('input[type="text"], input[type="email"], input[name="id"], input[name="login_id"]', { timeout: 15000 });
-        const passInput = await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+        // ページ内のすべての input 要素から ID / パスワード欄を特定
+        const inputs = await page.$$('input');
+        let idFilled = false;
+        let passFilled = false;
 
-        await idInput.fill(userId);
-        await passInput.fill(password);
+        for (const input of inputs) {
+            const type = await input.getAttribute('type');
+            const name = await input.getAttribute('name') || '';
 
-        // 送信ボタンのクリック
-        const submitBtn = await page.$('input[type="submit"], button[type="submit"], .btn_login, #login_btn');
+            if (!idFilled && (type === 'text' || type === 'email' || name.includes('id') || name.includes('user'))) {
+                await input.fill(userId);
+                idFilled = true;
+            } else if (!passFilled && type === 'password') {
+                await input.fill(password);
+                passFilled = true;
+            }
+        }
+
+        if (!idFilled || !passFilled) {
+            throw new Error('ログイン入力欄が見つかりませんでした。');
+        }
+
+        // フォーム送信
+        const submitBtn = await page.$('input[type="submit"], button[type="submit"], input[type="image"]');
         if (submitBtn) {
             await submitBtn.click();
         } else {
-            await passInput.press('Enter');
+            await page.keyboard.press('Enter');
         }
 
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(5000);
 
         const currentUrl = page.url();
         const content = await page.content();
@@ -61,12 +77,10 @@ app.post('/api/login-step1', async (req, res) => {
             }
         }, 300000);
 
-        // ログイン判定
-        if (!currentUrl.includes('login') && !content.includes('認証コード')) {
-            return res.json({ requiresOtp: false, sessionId });
-        }
+        // 2段階認証が必要かどうかの判定
+        const requiresOtp = content.includes('認証') || content.includes('コード') || content.includes('OTP');
 
-        return res.json({ requiresOtp: true, sessionId, message: '2段階認証コードを入力してください。' });
+        return res.json({ requiresOtp, sessionId, message: requiresOtp ? '2段階認証コードを入力してください。' : 'ログイン成功' });
 
     } catch (error) {
         console.error("Step1 Error:", error);
@@ -89,13 +103,17 @@ app.post('/api/download-step2', async (req, res) => {
 
         if (otpCode && page) {
             console.log("2段階認証コードを入力中...");
-            const codeInput = await page.$('input[name*="code"], input[name*="auth"], input[type="number"], input[type="text"]');
-            if (codeInput) {
-                await codeInput.fill(otpCode);
-                const submitBtn = await page.$('input[type="submit"], button[type="submit"]');
-                if (submitBtn) await submitBtn.click();
-                await page.waitForTimeout(4000);
+            const inputs = await page.$$('input');
+            for (const input of inputs) {
+                const type = await input.getAttribute('type');
+                if (type === 'text' || type === 'number') {
+                    await input.fill(otpCode);
+                    break;
+                }
             }
+            const submitBtn = await page.$('input[type="submit"], button[type="submit"]');
+            if (submitBtn) await submitBtn.click();
+            await page.waitForTimeout(4000);
         }
 
         console.log(`検索中: ${university} ${subject}`);
