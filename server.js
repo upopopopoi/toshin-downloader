@@ -27,38 +27,23 @@ app.post('/api/login-step1', async (req, res) => {
         });
         const page = await context.newPage();
 
-        console.log("東進トップページへ移動中...");
-        // 東進のトップページへアクセス
-        await page.goto('https://www.toshin-kakomon.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        console.log("東進ログインページへ移動中...");
+        // 提示いただいたログインURLへ直接アクセス
+        await page.goto('https://www.toshin.com/member/login', { waitUntil: 'networkidle', timeout: 60000 });
 
-        // ページ内のすべての input 要素から ID / パスワード欄を特定
-        const inputs = await page.$$('input');
-        let idFilled = false;
-        let passFilled = false;
+        // 入力欄の描画を待機して入力
+        const idInput = await page.waitForSelector('input[type="text"], input[type="email"], input[name*="id"], input[name*="mail"]', { timeout: 15000 });
+        const passInput = await page.waitForSelector('input[type="password"]', { timeout: 15000 });
 
-        for (const input of inputs) {
-            const type = await input.getAttribute('type');
-            const name = await input.getAttribute('name') || '';
+        await idInput.fill(userId);
+        await passInput.fill(password);
 
-            if (!idFilled && (type === 'text' || type === 'email' || name.includes('id') || name.includes('user'))) {
-                await input.fill(userId);
-                idFilled = true;
-            } else if (!passFilled && type === 'password') {
-                await input.fill(password);
-                passFilled = true;
-            }
-        }
-
-        if (!idFilled || !passFilled) {
-            throw new Error('ログイン入力欄が見つかりませんでした。');
-        }
-
-        // フォーム送信
-        const submitBtn = await page.$('input[type="submit"], button[type="submit"], input[type="image"]');
+        // ログインボタンを押下
+        const submitBtn = await page.$('button[type="submit"], input[type="submit"], .btn-login, #login_btn');
         if (submitBtn) {
             await submitBtn.click();
         } else {
-            await page.keyboard.press('Enter');
+            await passInput.press('Enter');
         }
 
         await page.waitForTimeout(5000);
@@ -77,8 +62,8 @@ app.post('/api/login-step1', async (req, res) => {
             }
         }, 300000);
 
-        // 2段階認証が必要かどうかの判定
-        const requiresOtp = content.includes('認証') || content.includes('コード') || content.includes('OTP');
+        // 2段階認証の判定
+        const requiresOtp = content.includes('認証') || content.includes('コード') || content.includes('OTP') || currentUrl.includes('auth');
 
         return res.json({ requiresOtp, sessionId, message: requiresOtp ? '2段階認証コードを入力してください。' : 'ログイン成功' });
 
@@ -103,17 +88,13 @@ app.post('/api/download-step2', async (req, res) => {
 
         if (otpCode && page) {
             console.log("2段階認証コードを入力中...");
-            const inputs = await page.$$('input');
-            for (const input of inputs) {
-                const type = await input.getAttribute('type');
-                if (type === 'text' || type === 'number') {
-                    await input.fill(otpCode);
-                    break;
-                }
+            const codeInput = await page.$('input[name*="code"], input[name*="auth"], input[type="number"], input[type="text"]');
+            if (codeInput) {
+                await codeInput.fill(otpCode);
+                const submitBtn = await page.$('button[type="submit"], input[type="submit"]');
+                if (submitBtn) await submitBtn.click();
+                await page.waitForTimeout(4000);
             }
-            const submitBtn = await page.$('input[type="submit"], button[type="submit"]');
-            if (submitBtn) await submitBtn.click();
-            await page.waitForTimeout(4000);
         }
 
         console.log(`検索中: ${university} ${subject}`);
