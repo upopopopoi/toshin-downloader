@@ -28,19 +28,21 @@ app.post('/api/login-step1', async (req, res) => {
         const page = await context.newPage();
 
         console.log("東進ログインページへ移動中...");
-        // 提示いただいたログインURLへ直接アクセス
-        await page.goto('https://www.toshin.com/member/login', { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto('https://www.toshin.com/member/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 入力欄の描画を待機して入力
-        const idInput = await page.waitForSelector('input[type="text"], input[type="email"], input[name*="id"], input[name*="mail"]', { timeout: 15000 });
-        const passInput = await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+        // ログで特定できた正確なID・パスワードセレクターを指定
+        const idInput = page.locator('#email, input[name="email"]');
+        const passInput = page.locator('#password, input[name="password"], input[type="password"]');
 
+        await idInput.waitFor({ state: 'visible', timeout: 20000 });
         await idInput.fill(userId);
+
+        await passInput.waitFor({ state: 'visible', timeout: 20000 });
         await passInput.fill(password);
 
-        // ログインボタンを押下
-        const submitBtn = await page.$('button[type="submit"], input[type="submit"], .btn-login, #login_btn');
-        if (submitBtn) {
+        // ログインボタンのクリック
+        const submitBtn = page.locator('button[type="submit"], input[type="submit"]');
+        if (await submitBtn.count() > 0) {
             await submitBtn.click();
         } else {
             await passInput.press('Enter');
@@ -88,11 +90,11 @@ app.post('/api/download-step2', async (req, res) => {
 
         if (otpCode && page) {
             console.log("2段階認証コードを入力中...");
-            const codeInput = await page.$('input[name*="code"], input[name*="auth"], input[type="number"], input[type="text"]');
-            if (codeInput) {
+            const codeInput = page.locator('input[name*="code"], input[name*="auth"], input[type="number"], input[type="text"]').first();
+            if (await codeInput.count() > 0) {
                 await codeInput.fill(otpCode);
-                const submitBtn = await page.$('button[type="submit"], input[type="submit"]');
-                if (submitBtn) await submitBtn.click();
+                const submitBtn = page.locator('button[type="submit"], input[type="submit"]').first();
+                if (await submitBtn.count() > 0) await submitBtn.click();
                 await page.waitForTimeout(4000);
             }
         }
