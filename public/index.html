@@ -3,139 +3,180 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>東進過去問一括ダウンローダー</title>
+    <title>東進過去問 DL</title>
     <style>
-        body { font-family: -apple-system, sans-serif; padding: 20px; background: #f4f6f8; }
-        .card { max-width: 400px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        h2 { text-align: center; color: #333; margin-top: 0; }
-        label { display: block; margin-top: 12px; font-weight: bold; font-size: 14px; }
-        input { width: 100%; padding: 10px; margin-top: 4px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
-        button { width: 100%; margin-top: 20px; padding: 12px; background: #007aff; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; }
-        button:disabled { background: #999; }
-        #status { margin-top: 15px; text-align: center; font-size: 14px; color: #666; }
+        body { font-family: sans-serif; background: #f4f6f8; display: flex; justify-content: center; padding: 20px; }
+        .card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 420px; width: 100%; }
+        h1 { text-align: center; font-size: 20px; margin-bottom: 20px; }
+        .form-group { margin-bottom: 14px; }
+        label { font-size: 12px; font-weight: bold; display: block; margin-bottom: 6px; }
+        input, select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
+        button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        button:disabled { background: #aaa; }
+        .error { color: #d9534f; font-size: 13px; margin-top: 12px; text-align: center; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>東進過去問 DL</h2>
-        
-        <!-- ステップ1: ログイン情報入力 -->
-        <form id="step1Form">
-            <label>ログインID (メールアドレス)</label>
-            <input type="text" id="userId" required>
+        <h1>東進過去問 DL</h1>
 
-            <label>パスワード</label>
-            <input type="password" id="password" required>
+        <!-- ステップ1: ログイン -->
+        <div id="step1">
+            <div class="form-group">
+                <label>ログインID (メールアドレス)</label>
+                <input type="text" id="userId" placeholder="cuorepatora.0614@icloud.com">
+            </div>
+            <div class="form-group">
+                <label>パスワード</label>
+                <input type="password" id="password">
+            </div>
+            <button id="btnStep1" onclick="submitStep1()">送信 ➔ 2段階認証へ</button>
+        </div>
 
-            <button type="submit" id="step1Btn">送信 ➔ 2段階認証へ</button>
-        </form>
-
-        <!-- ステップ2: 認証コード ＆ 検索情報入力 -->
-        <form id="step2Form" class="hidden">
-            <div id="otpSection">
-                <label>2段階認証コード（メール等で届いたコード）</label>
+        <!-- ステップ2: 認証コード & 大学選択 -->
+        <div id="step2" class="hidden">
+            <div class="form-group">
+                <label>2段階認証コード</label>
                 <input type="text" id="otpCode" placeholder="123456">
             </div>
+            <div class="form-group">
+                <label>大学名を入力・検索</label>
+                <input type="text" id="university" placeholder="東京大学">
+            </div>
+            <button id="btnFetchOptions" onclick="fetchOptions()">条件（年度・区分）を読み込む</button>
 
-            <label>大学名</label>
-            <input type="text" id="university" placeholder="例: 東京大学" required>
+            <!-- 選択肢メニュー（動的表示） -->
+            <div id="optionsGroup" class="hidden" style="margin-top: 15px;">
+                <div class="form-group">
+                    <label>年度を選択</label>
+                    <select id="selectYear"></select>
+                </div>
+                <div class="form-group">
+                    <label>学部・区分を選択</label>
+                    <select id="selectFaculty"></select>
+                </div>
+                <button id="btnDownload" onclick="startDownload()">一括ダウンロード (ZIP)</button>
+            </div>
+        </div>
 
-            <label>教科名</label>
-            <input type="text" id="subject" placeholder="例: 数学">
-
-            <button type="submit" id="step2Btn">一括ダウンロード (ZIP)</button>
-        </form>
-
-        <div id="status"></div>
+        <div id="statusMsg" style="margin-top: 10px; font-size: 13px; text-align: center; font-weight: bold;"></div>
+        <div id="errMsg" class="error"></div>
     </div>
 
     <script>
         let currentSessionId = '';
 
-        // ステップ1フォーム送信
-        document.getElementById('step1Form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const btn = document.getElementById('step1Btn');
-            const status = document.getElementById('status');
+        async function submitStep1() {
+            const userId = document.getElementById('userId').value;
+            const password = document.getElementById('password').value;
+            const btn = document.getElementById('btnStep1');
+            const errMsg = document.getElementById('errMsg');
+            const statusMsg = document.getElementById('statusMsg');
 
+            errMsg.innerText = '';
+            statusMsg.innerText = '東進にアクセス中...';
             btn.disabled = true;
-            status.innerText = '東進にアクセス中...';
 
             try {
                 const res = await fetch('/api/login-step1', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        userId: document.getElementById('userId').value,
-                        password: document.getElementById('password').value
-                    })
+                    body: JSON.stringify({ userId, password })
                 });
-
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error);
 
                 currentSessionId = data.sessionId;
-
-                document.getElementById('step1Form').classList.add('hidden');
-                document.getElementById('step2Form').classList.remove('hidden');
-
-                if (data.requiresOtp) {
-                    status.innerText = 'メール等に届いた2段階認証コードを入力してください。';
-                } else {
-                    document.getElementById('otpSection').classList.add('hidden');
-                    status.innerText = 'ログイン完了！大学名を入力してダウンロードしてください。';
-                }
-
+                document.getElementById('step1').classList.add('hidden');
+                document.getElementById('step2').classList.remove('hidden');
+                statusMsg.innerText = data.message;
             } catch (err) {
-                status.innerText = 'エラー: ' + err.message;
-                btn.disabled = false;
-            }
-        });
-
-        // ステップ2フォーム送信
-        document.getElementById('step2Form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const btn = document.getElementById('step2Btn');
-            const status = document.getElementById('status');
-
-            btn.disabled = true;
-            status.innerText = 'PDFを取得・ZIP化しています... (1〜2分かかります)';
-
-            try {
-                const res = await fetch('/api/download-step2', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        sessionId: currentSessionId,
-                        otpCode: document.getElementById('otpCode').value,
-                        university: document.getElementById('university').value,
-                        subject: document.getElementById('subject').value
-                    })
-                });
-
-                if (!res.ok) {
-                    const errData = await res.json();
-                    throw new Error(errData.error);
-                }
-
-                const blob = await res.blob();
-                const downloadUrl = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = `${document.getElementById('university').value}_過去問.zip`;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-
-                status.innerText = 'ダウンロードが完了しました！';
-
-            } catch (err) {
-                status.innerText = 'エラー: ' + err.message;
+                errMsg.innerText = `エラー: ${err.message}`;
+                statusMsg.innerText = '';
             } finally {
                 btn.disabled = false;
             }
-        });
+        }
+
+        async function fetchOptions() {
+            const otpCode = document.getElementById('otpCode').value;
+            const university = document.getElementById('university').value;
+            const btn = document.getElementById('btnFetchOptions');
+            const errMsg = document.getElementById('errMsg');
+            const statusMsg = document.getElementById('statusMsg');
+
+            errMsg.innerText = '';
+            statusMsg.innerText = '選択肢を取得中...';
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/get-options', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: currentSessionId, otpCode, university })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+
+                // 年度プルダウン
+                const selectYear = document.getElementById('selectYear');
+                selectYear.innerHTML = data.years.map(y => `<option value="${y}">${y}</option>`).join('');
+
+                // 学部プルダウン
+                const selectFaculty = document.getElementById('selectFaculty');
+                selectFaculty.innerHTML = data.faculties.map(f => `<option value="${f}">${f}</option>`).join('');
+
+                document.getElementById('optionsGroup').classList.remove('hidden');
+                statusMsg.innerText = '年度と学部/区分を選択してください。';
+            } catch (err) {
+                errMsg.innerText = `エラー: ${err.message}`;
+                statusMsg.innerText = '';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function startDownload() {
+            const university = document.getElementById('university').value;
+            const year = document.getElementById('selectYear').value;
+            const faculty = document.getElementById('selectFaculty').value;
+            const btn = document.getElementById('btnDownload');
+            const errMsg = document.getElementById('errMsg');
+            const statusMsg = document.getElementById('statusMsg');
+
+            errMsg.innerText = '';
+            statusMsg.innerText = 'PDFを一括DL中...';
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/download-final', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: currentSessionId, university, year, faculty })
+                });
+
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.error);
+                }
+
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${university}_${year}_${faculty}.zip`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                statusMsg.innerText = 'ダウンロード完了！';
+            } catch (err) {
+                errMsg.innerText = `エラー: ${err.message}`;
+                statusMsg.innerText = '';
+            } finally {
+                btn.disabled = false;
+            }
+        }
     </script>
 </body>
 </html>
