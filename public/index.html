@@ -13,17 +13,30 @@
         button { width: 100%; margin-top: 20px; padding: 12px; background: #007aff; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; }
         button:disabled { background: #999; }
         #status { margin-top: 15px; text-align: center; font-size: 14px; color: #666; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="card">
         <h2>東進過去問 DL</h2>
-        <form id="dlForm">
+        
+        <!-- ステップ1: ログイン情報入力 -->
+        <form id="step1Form">
             <label>ログインID (メールアドレス)</label>
             <input type="text" id="userId" required>
 
             <label>パスワード</label>
             <input type="password" id="password" required>
+
+            <button type="submit" id="step1Btn">送信 ➔ 2段階認証へ</button>
+        </form>
+
+        <!-- ステップ2: 認証コード ＆ 検索情報入力 -->
+        <form id="step2Form" class="hidden">
+            <div id="otpSection">
+                <label>2段階認証コード（メール等で届いたコード）</label>
+                <input type="text" id="otpCode" placeholder="123456">
+            </div>
 
             <label>大学名</label>
             <input type="text" id="university" placeholder="例: 東京大学" required>
@@ -31,48 +44,92 @@
             <label>教科名</label>
             <input type="text" id="subject" placeholder="例: 数学">
 
-            <button type="submit" id="submitBtn">一括ダウンロード (ZIP)</button>
+            <button type="submit" id="step2Btn">一括ダウンロード (ZIP)</button>
         </form>
+
         <div id="status"></div>
     </div>
 
     <script>
-        document.getElementById('dlForm').addEventListener('submit', async (e) => {
+        let currentSessionId = '';
+
+        // ステップ1フォーム送信
+        document.getElementById('step1Form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            const btn = document.getElementById('submitBtn');
+            const btn = document.getElementById('step1Btn');
             const status = document.getElementById('status');
 
             btn.disabled = true;
-            status.innerText = 'ログイン中・PDFを取得しています... (1〜2分かかります)';
-
-            const payload = {
-                userId: document.getElementById('userId').value,
-                password: document.getElementById('password').value,
-                university: document.getElementById('university').value,
-                subject: document.getElementById('subject').value
-            };
+            status.innerText = '東進にアクセス中...';
 
             try {
-                const response = await fetch('/api/download', {
+                const res = await fetch('/api/login-step1', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify({
+                        userId: document.getElementById('userId').value,
+                        password: document.getElementById('password').value
+                    })
                 });
 
-                if (!response.ok) {
-                    const errData = await response.json();
-                    throw new Error(errData.error || 'ダウンロードに失敗しました。');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+
+                currentSessionId = data.sessionId;
+
+                document.getElementById('step1Form').classList.add('hidden');
+                document.getElementById('step2Form').classList.remove('hidden');
+
+                if (data.requiresOtp) {
+                    status.innerText = 'メール等に届いた2段階認証コードを入力してください。';
+                } else {
+                    document.getElementById('otpSection').classList.add('hidden');
+                    status.innerText = 'ログイン完了！大学名を入力してダウンロードしてください。';
                 }
 
-                const blob = await response.blob();
+            } catch (err) {
+                status.innerText = 'エラー: ' + err.message;
+                btn.disabled = false;
+            }
+        });
+
+        // ステップ2フォーム送信
+        document.getElementById('step2Form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('step2Btn');
+            const status = document.getElementById('status');
+
+            btn.disabled = true;
+            status.innerText = 'PDFを取得・ZIP化しています... (1〜2分かかります)';
+
+            try {
+                const res = await fetch('/api/download-step2', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: currentSessionId,
+                        otpCode: document.getElementById('otpCode').value,
+                        university: document.getElementById('university').value,
+                        subject: document.getElementById('subject').value
+                    })
+                });
+
+                if (!res.ok) {
+                    const errData = await res.json();
+                    throw new Error(errData.error);
+                }
+
+                const blob = await res.blob();
                 const downloadUrl = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = downloadUrl;
-                a.download = `${payload.university}_過去問.zip`;
+                a.download = `${document.getElementById('university').value}_過去問.zip`;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
+
                 status.innerText = 'ダウンロードが完了しました！';
+
             } catch (err) {
                 status.innerText = 'エラー: ' + err.message;
             } finally {
