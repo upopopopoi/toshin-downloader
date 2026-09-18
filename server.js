@@ -30,7 +30,6 @@ app.post('/api/login-step1', async (req, res) => {
         console.log("東進ログインページへ移動中...");
         await page.goto('https://www.toshin.com/member/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // ログで特定できた正確なID・パスワードセレクターを指定
         const idInput = page.locator('#email, input[name="email"]');
         const passInput = page.locator('#password, input[name="password"], input[type="password"]');
 
@@ -40,7 +39,6 @@ app.post('/api/login-step1', async (req, res) => {
         await passInput.waitFor({ state: 'visible', timeout: 20000 });
         await passInput.fill(password);
 
-        // ログインボタンのクリック
         const submitBtn = page.locator('button[type="submit"], input[type="submit"]');
         if (await submitBtn.count() > 0) {
             await submitBtn.click();
@@ -56,7 +54,6 @@ app.post('/api/login-step1', async (req, res) => {
         const sessionId = Date.now().toString();
         sessions[sessionId] = { browser, context, page, userId };
 
-        // 5分後に自動セッション破棄
         setTimeout(() => {
             if (sessions[sessionId] && sessions[sessionId].browser) {
                 sessions[sessionId].browser.close().catch(() => {});
@@ -64,7 +61,6 @@ app.post('/api/login-step1', async (req, res) => {
             }
         }, 300000);
 
-        // 2段階認証の判定
         const requiresOtp = content.includes('認証') || content.includes('コード') || content.includes('OTP') || currentUrl.includes('auth');
 
         return res.json({ requiresOtp, sessionId, message: requiresOtp ? '2段階認証コードを入力してください。' : 'ログイン成功' });
@@ -88,23 +84,44 @@ app.post('/api/download-step2', async (req, res) => {
     try {
         let { page, context, browser } = session;
 
+        // 2段階認証コードの入力処理
         if (otpCode && page) {
             console.log("2段階認証コードを入力中...");
-            const codeInput = page.locator('input[name*="code"], input[name*="auth"], input[type="number"], input[type="text"]').first();
+            const codeInput = page.locator('input[type="text"], input[type="number"], input[name*="code"], input[name*="auth"]').first();
+            
             if (await codeInput.count() > 0) {
                 await codeInput.fill(otpCode);
                 const submitBtn = page.locator('button[type="submit"], input[type="submit"]').first();
-                if (await submitBtn.count() > 0) await submitBtn.click();
-                await page.waitForTimeout(4000);
+                
+                if (await submitBtn.count() > 0) {
+                    await Promise.all([
+                        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+                        submitBtn.click()
+                    ]);
+                } else {
+                    await codeInput.press('Enter');
+                }
+                await page.waitForTimeout(3000);
             }
         }
 
-        console.log(`検索中: ${university} ${subject}`);
-        const searchUrl = `https://www.toshin-kakomon.com/search.php?univ=${encodeURIComponent(university)}&subject=${encodeURIComponent(subject || '')}`;
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        console.log(`過去問データベースに遷移中: ${university} ${subject}`);
+        
+        // 過去問データベースのトップに移動
+        await page.goto('https://www.toshin-kakomon.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
+        // 検索窓への入力と実行
+        const searchInput = page.locator('input[type="text"], input[name*="kw"], input[name*="search"]').first();
+        if (await searchInput.count() > 0) {
+            const query = `${university} ${subject || ''}`.trim();
+            await searchInput.fill(query);
+            await searchInput.press('Enter');
+            await page.waitForTimeout(4000);
+        }
+
+        // PDF リンクの収集
         const pdfLinks = await page.evaluate(() => {
-            const anchors = Array.from(document.querySelectorAll('a[href*=".pdf"]'));
+            const anchors = Array.from(document.querySelectorAll('a[href*=".pdf"], a[href*="download"]'));
             return anchors.map(a => ({
                 title: a.innerText.trim() || 'kakomon',
                 url: a.href
@@ -114,7 +131,7 @@ app.post('/api/download-step2', async (req, res) => {
         if (pdfLinks.length === 0) {
             if (browser) await browser.close();
             delete sessions[sessionId];
-            return res.status(404).json({ error: '該当する過去問PDFが見つかりませんでした。大学名や教科名を確認してください。' });
+            return res.status(404).json({ error: `「${university} ${subject}」の過去問PDFが見つかりませんでした。` });
         }
 
         res.attachment(`${university}_${subject || '過去問'}.zip`);
