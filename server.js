@@ -23,7 +23,7 @@ app.post('/api/login-step1', async (req, res) => {
 
         await page.locator('#email, input[name="email"]').fill(userId);
         await page.locator('#password, input[name="password"], input[type="password"]').fill(password);
-        
+
         const submitBtn = page.locator('button[type="submit"], input[type="submit"]');
         if (await submitBtn.count() > 0) await submitBtn.click();
         else await page.keyboard.press('Enter');
@@ -35,7 +35,7 @@ app.post('/api/login-step1', async (req, res) => {
         setTimeout(() => {
             if (sessions[sessionId]?.browser) sessions[sessionId].browser.close().catch(() => {});
             delete sessions[sessionId];
-        }, 300000); // 5分でセッション切れ
+        }, 300000);
 
         return res.json({ sessionId, message: '2段階認証コードと大学名を入力してください。' });
     } catch (error) {
@@ -44,7 +44,7 @@ app.post('/api/login-step1', async (req, res) => {
     }
 });
 
-// ステップ2: 認証コード入力 ＆ 大学ページへ移動・年度取得
+// ステップ2: 認証コード入力 ＆ 大学検索（クリック不要の直接URL移動）
 app.post('/api/search-univ', async (req, res) => {
     const { sessionId, otpCode, university } = req.body;
     const session = sessions[sessionId];
@@ -53,7 +53,6 @@ app.post('/api/search-univ', async (req, res) => {
     try {
         let { page } = session;
 
-        // OTP入力
         if (otpCode) {
             const codeInput = page.locator('input[type="text"], input[type="number"]').first();
             if (await codeInput.count() > 0) {
@@ -65,7 +64,7 @@ app.post('/api/search-univ', async (req, res) => {
 
         await page.goto('https://www.toshin-kakomon.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 【改善】クリックで移動せず、hrefを取得して直接URL移動する（タイムアウト回避）
+        // URLを直接抽出して移動（クリック要素非表示エラーを回避）
         const univUrl = await page.evaluate((u) => {
             const link = Array.from(document.querySelectorAll('a')).find(a => a.innerText.includes(u));
             return link ? link.href : null;
@@ -74,13 +73,12 @@ app.post('/api/search-univ', async (req, res) => {
         if (!univUrl) return res.status(404).json({ error: `「${university}」が見つかりません。` });
         await page.goto(univUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 【改善】年度のリンクだけを厳密に抽出（ゴミリンク排除）
+        // 年度の厳密抽出（ゴミリンク排除）
         const years = await page.evaluate(() => {
             const results = [];
             const seen = new Set();
             document.querySelectorAll('a').forEach(a => {
                 const text = a.innerText.trim();
-                // 「2023年」「2023年度」などのテキストのみ許可
                 if (/^(19|20)\d{2}年?度?$/.test(text) && !seen.has(a.href)) {
                     seen.add(a.href);
                     results.push({ text, url: a.href });
@@ -91,13 +89,12 @@ app.post('/api/search-univ', async (req, res) => {
 
         if (years.length === 0) years.push({ text: '全年度（年度選択なし）', url: page.url() });
         return res.json({ years });
-
     } catch (error) {
         res.status(500).json({ error: `大学検索エラー: ${error.message}` });
     }
 });
 
-// ステップ3: 学部・日程の取得
+// ステップ3: 学部・日程の取得（不適切な文字列を除外）
 app.post('/api/get-faculties', async (req, res) => {
     const { sessionId, yearUrl } = req.body;
     const session = sessions[sessionId];
@@ -107,15 +104,13 @@ app.post('/api/get-faculties', async (req, res) => {
         let { page } = session;
         await page.goto(yearUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 【改善】ゴミテキストを徹底的に弾き、学部名らしきものだけを抽出
         const faculties = await page.evaluate(() => {
             const results = [];
             const seen = new Set();
             const garbage = ['東進', 'ログイン', 'ログアウト', 'ホーム', '利用', '規約', '個人', 'プライバシー', 'TOP', '一覧', '戻る', '検索', '会社', 'お問い合わせ', '大学'];
-            
+
             document.querySelectorAll('a').forEach(a => {
                 const text = a.innerText.trim();
-                // 短すぎる/長すぎる/ゴミワードを含む/年度テキストは除外
                 if (text.length >= 2 && text.length <= 30 && !garbage.some(g => text.includes(g)) && !/^(19|20)\d{2}/.test(text)) {
                     if (!seen.has(text) && a.href.startsWith('http')) {
                         seen.add(text);
@@ -128,7 +123,6 @@ app.post('/api/get-faculties', async (req, res) => {
 
         if (faculties.length === 0) faculties.push({ text: 'このページの全PDFを取得', url: page.url() });
         return res.json({ faculties });
-
     } catch (error) {
         res.status(500).json({ error: `学部取得エラー: ${error.message}` });
     }
@@ -144,7 +138,6 @@ app.post('/api/download-final', async (req, res) => {
         let { page, context, browser } = session;
         await page.goto(facultyUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // PDFのリンク（問題、解答など）を抽出
         const pdfLinks = await page.evaluate(() => {
             return Array.from(document.querySelectorAll('a[href*=".pdf"], a[href*="download"]'))
                 .map(a => ({ title: a.innerText.trim() || 'paper', url: a.href }));
@@ -164,4 +157,22 @@ app.post('/api/download-final', async (req, res) => {
             try {
                 const pdfRes = await context.request.get(link.url);
                 const buffer = await pdfRes.body();
-                const safeTitle = link
+                const safeTitle = link.title.replace(/[\\/:*?"<>|]/g, '_');
+                archive.append(buffer, { name: `${i + 1}_${safeTitle}.pdf` });
+            } catch (err) {
+                console.error(`Download error for ${link.url}:`, err);
+            }
+        }
+
+        await archive.finalize();
+        await browser.close();
+        delete sessions[sessionId];
+    } catch (error) {
+        if (session?.browser) await session.browser.close().catch(() => {});
+        delete sessions[sessionId];
+        res.status(500).json({ error: `内部処理エラー: ${error.message}` });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
