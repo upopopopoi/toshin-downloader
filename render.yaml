@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: toshin-downloader
+    env: docker
+    plan: free
+    buildCommand: ""
+    startCommand: ""
