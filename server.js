@@ -8,7 +8,7 @@ app.use(express.static('public'));
 
 const sessions = {};
 
-// ステップ1: ログイン試行
+// ステップ1: ログイン
 app.post('/api/login-step1', async (req, res) => {
     const { userId, password } = req.body;
 
@@ -27,7 +27,6 @@ app.post('/api/login-step1', async (req, res) => {
         });
         const page = await context.newPage();
 
-        console.log("東進ログインページへ移動中...");
         await page.goto('https://www.toshin.com/member/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
         const idInput = page.locator('#email, input[name="email"]');
@@ -48,9 +47,6 @@ app.post('/api/login-step1', async (req, res) => {
 
         await page.waitForTimeout(5000);
 
-        const currentUrl = page.url();
-        const content = await page.content();
-
         const sessionId = Date.now().toString();
         sessions[sessionId] = { browser, context, page, userId };
 
@@ -61,9 +57,7 @@ app.post('/api/login-step1', async (req, res) => {
             }
         }, 300000);
 
-        const requiresOtp = content.includes('認証') || content.includes('コード') || content.includes('OTP') || currentUrl.includes('auth');
-
-        return res.json({ requiresOtp, sessionId, message: requiresOtp ? '2段階認証コードを入力してください。' : 'ログイン成功' });
+        return res.json({ sessionId, message: '認証コードと大学名を入力してください。' });
 
     } catch (error) {
         console.error("Step1 Error:", error);
@@ -72,9 +66,9 @@ app.post('/api/login-step1', async (req, res) => {
     }
 });
 
-// ステップ2: 認証コード入力・一括取得
-app.post('/api/download-step2', async (req, res) => {
-    const { sessionId, otpCode, university, subject } = req.body;
+// ステップ2: 認証コード入力 ＆ 選択肢（年度・学部）の動的取得
+app.post('/api/get-options', async (req, res) => {
+    const { sessionId, otpCode, university } = req.body;
     const session = sessions[sessionId];
 
     if (!session) {
@@ -82,17 +76,14 @@ app.post('/api/download-step2', async (req, res) => {
     }
 
     try {
-        let { page, context, browser } = session;
+        let { page } = session;
 
-        // 2段階認証コードの入力処理
+        // OTP入力
         if (otpCode && page) {
-            console.log("2段階認証コードを入力中...");
             const codeInput = page.locator('input[type="text"], input[type="number"], input[name*="code"], input[name*="auth"]').first();
-            
             if (await codeInput.count() > 0) {
                 await codeInput.fill(otpCode);
                 const submitBtn = page.locator('button[type="submit"], input[type="submit"]').first();
-                
                 if (await submitBtn.count() > 0) {
                     await Promise.all([
                         page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
@@ -105,25 +96,89 @@ app.post('/api/download-step2', async (req, res) => {
             }
         }
 
-        console.log(`過去問データベースに遷移中: ${university} ${subject}`);
-        
-        // 過去問データベースのトップに移動
+        // 過去問トップページ
         await page.goto('https://www.toshin-kakomon.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 検索窓への入力と実行
-        const searchInput = page.locator('input[type="text"], input[name*="kw"], input[name*="search"]').first();
-        if (await searchInput.count() > 0) {
-            const query = `${university} ${subject || ''}`.trim();
-            await searchInput.fill(query);
-            await searchInput.press('Enter');
-            await page.waitForTimeout(4000);
+        // 大学リンク検索
+        const univLink = page.locator(`a:has-text("${university}")`).first();
+        if (await univLink.count() === 0) {
+            return res.status(404).json({ error: `「${university}」が見つかりませんでした。正式名称で入力してください。` });
         }
 
-        // PDF リンクの収集
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
+            univLink.click()
+        ]);
+
+        // 大学ページから「年度」と「学部・区分」の選択肢リンクを自動抽出
+        const optionsData = await page.evaluate(() => {
+            const links = Array.from(document.querySelectorAll('a'));
+            
+            // 年度の抽出（例: 2024年, 2023年など）
+            const years = links
+                .map(a => a.innerText.trim())
+                .filter(text => /\d{4}年?/.test(text));
+
+            // 学部・方式の抽出
+            const faculties = links
+                .map(a => a.innerText.trim())
+                .filter(text => text.includes('類') || text.includes('学部') || text.includes('日程') || text.includes('前期') || text.includes('後期'));
+
+            return {
+                years: Array.from(new Set(years)),
+                faculties: Array.from(new Set(faculties))
+            };
+        });
+
+        // 候補がない場合のフォールバック設定
+        if (optionsData.years.length === 0) optionsData.years = ['指定なし'];
+        if (optionsData.faculties.length === 0) optionsData.faculties = ['全学部/全区分'];
+
+        return res.json(optionsData);
+
+    } catch (error) {
+        console.error("Get Options Error:", error);
+        res.status(500).json({ error: `選択肢取得エラー: ${error.message}` });
+    }
+});
+
+// ステップ3: 最終選択によるPDFダウンロード
+app.post('/api/download-final', async (req, res) => {
+    const { sessionId, university, year, faculty } = req.body;
+    const session = sessions[sessionId];
+
+    if (!session) {
+        return res.status(400).json({ error: 'セッションが期限切れです。最初からやり直してください。' });
+    }
+
+    try {
+        let { page, context, browser } = session;
+
+        if (year && year !== '指定なし') {
+            const yearLink = page.locator(`a:has-text("${year}")`).first();
+            if (await yearLink.count() > 0) {
+                await Promise.all([
+                    page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
+                    yearLink.click()
+                ]);
+            }
+        }
+
+        if (faculty && faculty !== '全学部/全区分') {
+            const facultyLink = page.locator(`a:has-text("${faculty}")`).first();
+            if (await facultyLink.count() > 0) {
+                await Promise.all([
+                    page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
+                    facultyLink.click()
+                ]);
+            }
+        }
+
+        // PDFリンク抽出
         const pdfLinks = await page.evaluate(() => {
-            const anchors = Array.from(document.querySelectorAll('a[href*=".pdf"], a[href*="download"]'));
+            const anchors = Array.from(document.querySelectorAll('a[href*=".pdf"], a[href*="download.php"]'));
             return anchors.map(a => ({
-                title: a.innerText.trim() || 'kakomon',
+                title: a.innerText.trim() || 'kakomon_paper',
                 url: a.href
             }));
         });
@@ -131,10 +186,10 @@ app.post('/api/download-step2', async (req, res) => {
         if (pdfLinks.length === 0) {
             if (browser) await browser.close();
             delete sessions[sessionId];
-            return res.status(404).json({ error: `「${university} ${subject}」の過去問PDFが見つかりませんでした。` });
+            return res.status(404).json({ error: 'PDFが見つかりませんでした。別の組み合わせを試してください。' });
         }
 
-        res.attachment(`${university}_${subject || '過去問'}.zip`);
+        res.attachment(`${university}_${year}_${faculty}.zip`);
         const archive = archiver('zip', { zlib: { level: 9 } });
         archive.pipe(res);
 
@@ -154,7 +209,7 @@ app.post('/api/download-step2', async (req, res) => {
         delete sessions[sessionId];
 
     } catch (error) {
-        console.error("Step2 Error:", error);
+        console.error("Download Error:", error);
         if (session && session.browser) await session.browser.close().catch(() => {});
         delete sessions[sessionId];
         res.status(500).json({ error: `内部処理エラー: ${error.message}` });
