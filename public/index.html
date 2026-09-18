@@ -13,7 +13,7 @@
         input, select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
         button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 10px; }
         button:disabled { background: #aaa; }
-        .error { color: #d9534f; font-size: 13px; margin-top: 12px; text-align: center; }
+        .error { color: #d9534f; font-size: 13px; margin-top: 12px; text-align: center; word-break: break-all; }
         .hidden { display: none; }
     </style>
 </head>
@@ -21,7 +21,6 @@
     <div class="card">
         <h1>東進過去問 DL</h1>
 
-        <!-- ステップ1: ログイン -->
         <div id="step1">
             <div class="form-group">
                 <label>ログインID (メールアドレス)</label>
@@ -34,26 +33,28 @@
             <button id="btnStep1" onclick="submitStep1()">送信 ➔ 2段階認証へ</button>
         </div>
 
-        <!-- ステップ2: 認証コード & 大学選択 -->
         <div id="step2" class="hidden">
             <div class="form-group">
                 <label>2段階認証コード</label>
                 <input type="text" id="otpCode" placeholder="123456">
             </div>
             <div class="form-group">
-                <label>大学名を入力・検索</label>
+                <label>大学名を入力</label>
                 <input type="text" id="university" placeholder="東京大学">
             </div>
-            <button id="btnFetchOptions" onclick="fetchOptions()">条件（年度・区分）を読み込む</button>
+            <button id="btnSearchUniv" onclick="searchUniversity()">大学ページを開く</button>
 
-            <!-- 選択肢メニュー（動的表示） -->
-            <div id="optionsGroup" class="hidden" style="margin-top: 15px;">
+            <div id="groupYear" class="hidden" style="margin-top: 15px;">
                 <div class="form-group">
                     <label>年度を選択</label>
                     <select id="selectYear"></select>
                 </div>
+                <button id="btnFetchFaculty" onclick="fetchFaculties()">この年度の学部/日程を取得</button>
+            </div>
+
+            <div id="groupFaculty" class="hidden" style="margin-top: 15px;">
                 <div class="form-group">
-                    <label>学部・区分を選択</label>
+                    <label>学部・方式・日程を選択</label>
                     <select id="selectFaculty"></select>
                 </div>
                 <button id="btnDownload" onclick="startDownload()">一括ダウンロード (ZIP)</button>
@@ -99,19 +100,19 @@
             }
         }
 
-        async function fetchOptions() {
+        async function searchUniversity() {
             const otpCode = document.getElementById('otpCode').value;
             const university = document.getElementById('university').value;
-            const btn = document.getElementById('btnFetchOptions');
+            const btn = document.getElementById('btnSearchUniv');
             const errMsg = document.getElementById('errMsg');
             const statusMsg = document.getElementById('statusMsg');
 
             errMsg.innerText = '';
-            statusMsg.innerText = '選択肢を取得中...';
+            statusMsg.innerText = '大学ページを検索・解析中...';
             btn.disabled = true;
 
             try {
-                const res = await fetch('/api/get-options', {
+                const res = await fetch('/api/search-univ', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sessionId: currentSessionId, otpCode, university })
@@ -119,16 +120,44 @@
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error);
 
-                // 年度プルダウン
                 const selectYear = document.getElementById('selectYear');
-                selectYear.innerHTML = data.years.map(y => `<option value="${y}">${y}</option>`).join('');
+                selectYear.innerHTML = data.years.map(y => `<option value="${y.url}">${y.text}</option>`).join('');
 
-                // 学部プルダウン
+                document.getElementById('groupYear').classList.remove('hidden');
+                statusMsg.innerText = `${university} の年度リストを取得しました。`;
+            } catch (err) {
+                errMsg.innerText = `エラー: ${err.message}`;
+                statusMsg.innerText = '';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function fetchFaculties() {
+            const yearUrl = document.getElementById('selectYear').value;
+            const yearText = document.getElementById('selectYear').options[document.getElementById('selectYear').selectedIndex].text;
+            const btn = document.getElementById('btnFetchFaculty');
+            const errMsg = document.getElementById('errMsg');
+            const statusMsg = document.getElementById('statusMsg');
+
+            errMsg.innerText = '';
+            statusMsg.innerText = `${yearText} の学部・日程を読み込み中...`;
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/get-faculties', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: currentSessionId, yearUrl })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+
                 const selectFaculty = document.getElementById('selectFaculty');
-                selectFaculty.innerHTML = data.faculties.map(f => `<option value="${f}">${f}</option>`).join('');
+                selectFaculty.innerHTML = data.faculties.map(f => `<option value="${f.url}">${f.text}</option>`).join('');
 
-                document.getElementById('optionsGroup').classList.remove('hidden');
-                statusMsg.innerText = '年度と学部/区分を選択してください。';
+                document.getElementById('groupFaculty').classList.remove('hidden');
+                statusMsg.innerText = '学部・方式を選択して一括ダウンロードを押してください。';
             } catch (err) {
                 errMsg.innerText = `エラー: ${err.message}`;
                 statusMsg.innerText = '';
@@ -138,22 +167,21 @@
         }
 
         async function startDownload() {
+            const facultyUrl = document.getElementById('selectFaculty').value;
             const university = document.getElementById('university').value;
-            const year = document.getElementById('selectYear').value;
-            const faculty = document.getElementById('selectFaculty').value;
             const btn = document.getElementById('btnDownload');
             const errMsg = document.getElementById('errMsg');
             const statusMsg = document.getElementById('statusMsg');
 
             errMsg.innerText = '';
-            statusMsg.innerText = 'PDFを一括DL中...';
+            statusMsg.innerText = 'PDFを一括DL中...（ZIP生成中）';
             btn.disabled = true;
 
             try {
                 const res = await fetch('/api/download-final', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId: currentSessionId, university, year, faculty })
+                    body: JSON.stringify({ sessionId: currentSessionId, facultyUrl })
                 });
 
                 if (!res.ok) {
@@ -165,7 +193,7 @@
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `${university}_${year}_${faculty}.zip`;
+                a.download = `${university}_過去問.zip`;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
