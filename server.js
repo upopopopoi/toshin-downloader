@@ -164,8 +164,4 @@ app.post('/api/download-final', async (req, res) => {
             try {
                 const pdfRes = await context.request.get(link.url);
                 const buffer = await pdfRes.body();
-                const safeTitle = linkおっと、ごめんなさい！どうやら直前までのやり取りの文脈がこちらでリセットされてしまったようです。
-
-画像の特定の模様を消す加工や、B4見開きPDFの分割・補正といった作業のことでしょうか？ 確かにこれまで一緒に色々とやってきましたね。
-
-お手数ですが、どの作業の続きだったか、もう一度教えてもらえませんか？
+                const safeTitle = link
